@@ -36,12 +36,25 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
         {
             internal readonly SnapshotSpan WordSpan;
             internal readonly ReadOnlyCollection<string> WordCollection;
+            internal readonly ReadOnlyCollection<Tuple<char, string>> RegisterCollection;
+            internal readonly bool SelectionUpdatesBuffer;
 
-            internal CompletionData(SnapshotSpan wordSpan, ReadOnlyCollection<string> wordCollection)
+            internal CompletionData(SnapshotSpan wordSpan, ReadOnlyCollection<Tuple<char, string>> registerCollection, bool selectionUpdatesBuffer)
+            {
+                WordSpan = wordSpan;
+                RegisterCollection = registerCollection;
+                WordCollection = null;
+                SelectionUpdatesBuffer = selectionUpdatesBuffer;
+            }
+
+            internal CompletionData(SnapshotSpan wordSpan, ReadOnlyCollection<string> wordCollection, bool selectionUpdatesBuffer)
             {
                 WordSpan = wordSpan;
                 WordCollection = wordCollection;
+                RegisterCollection = null;
+                SelectionUpdatesBuffer = selectionUpdatesBuffer;
             }
+
         }
 
         #endregion
@@ -85,17 +98,25 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
 
                 // Get out the collection of words.  If none is present then there is no information to
                 // augment here
-                if (!textView.Properties.TryGetPropertySafe(_completionDataKey, out CompletionData completionData) || completionData.WordCollection == null)
+                if (!textView.Properties.TryGetPropertySafe(_completionDataKey, out CompletionData completionData))
                 {
                     return;
                 }
 
-                var trackingSpan = completionData.WordSpan.Snapshot.CreateTrackingSpan(
-                    completionData.WordSpan.Span,
-                    SpanTrackingMode.EdgeInclusive);
-                var completions = completionData.WordCollection.Select(word => new Completion(word));
-                var wordCompletionSet = new WordCompletionSet(trackingSpan, completions);
-                completionSets.Add(wordCompletionSet);
+                var trackingSpan = completionData.WordSpan.Snapshot.CreateTrackingSpan(completionData.WordSpan.Span,
+                                                                                       SpanTrackingMode.EdgeInclusive);
+                if (completionData.WordCollection != null)
+                {
+                    var completions = completionData.WordCollection.Select(word => new Completion(word));
+                    var wordCompletionSet = new WordCompletionSet(trackingSpan, completions, completionData.SelectionUpdatesBuffer);
+                    completionSets.Add(wordCompletionSet);
+                }
+                else if (completionData.RegisterCollection != null)
+                {
+                    var completions = completionData.RegisterCollection.Select(word => new Completion($"\"{word.Item1}: {word.Item2}") { InsertionText = word.Item1.ToString() });
+                    var wordCompletionSet = new WordCompletionSet(trackingSpan, completions, completionData.SelectionUpdatesBuffer);
+                    completionSets.Add(wordCompletionSet);
+                }
             }
 
             void IDisposable.Dispose()
@@ -124,6 +145,8 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
             void IWordCompletionSession.Dismiss()
             {
             }
+
+            public string CurrentInsertionText => null;
 
             event EventHandler IWordCompletionSession.Dismissed
             {
@@ -193,9 +216,26 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
 
         IWordCompletionSession IWordCompletionSessionFactoryService.CreateWordCompletionSession(ITextView textView, SnapshotSpan wordSpan, IEnumerable<string> wordCollection, bool isForward)
         {
-            var completionData = new CompletionData(
-                wordSpan,
-                new ReadOnlyCollection<string>(wordCollection.ToList()));
+            var completionData = new CompletionData(wordSpan,
+                                                    new ReadOnlyCollection<string>(wordCollection.ToList()),
+                                                    true);
+            // Ensure the correct item is selected and committed to the ITextBuffer.  If this is a forward completion
+            // then we select the first item, else the last.  Sending the command will go ahead and insert the 
+            // completion in the given span
+            var command = isForward ? IntellisenseKeyboardCommand.TopLine : IntellisenseKeyboardCommand.BottomLine;
+            return CreateWordCompletionSession(textView, wordSpan, completionData, command);
+        }
+
+        IWordCompletionSession IWordCompletionSessionFactoryService.CreateRegisterCompletionSession(ITextView textView, SnapshotSpan wordSpan, IEnumerable<Tuple<char, string>> pairs)
+        {
+            var completionData = new CompletionData(wordSpan,
+                                                    new ReadOnlyCollection<Tuple<char, string>>(pairs.ToList()),
+                                                    false);
+            return CreateWordCompletionSession(textView, wordSpan, completionData);
+        }
+
+        private IWordCompletionSession CreateWordCompletionSession(ITextView textView, SnapshotSpan wordSpan, CompletionData completionData, IntellisenseKeyboardCommand? command = null)
+        {
             textView.Properties[_completionDataKey] = completionData;
             try
             {
@@ -231,21 +271,18 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
                 {
                     wordCompletionSet = new WordCompletionSet();
                 }
+
                 completionSession.SelectedCompletionSet = wordCompletionSet;
 
                 var intellisenseSessionStack = _intellisenseSessionStackMapService.GetStackForTextView(textView);
                 var wordTrackingSpan = wordSpan.Snapshot.CreateTrackingSpan(wordSpan.Span, SpanTrackingMode.EdgeInclusive);
-                var wordCompletionSession = new WordCompletionSession(
-                    wordTrackingSpan,
-                    intellisenseSessionStack,
-                    completionSession,
-                    wordCompletionSet);
+                var wordCompletionSession = new WordCompletionSession(wordTrackingSpan,
+                                                                      intellisenseSessionStack,
+                                                                      completionSession,
+                                                                      wordCompletionSet);
 
-                // Ensure the correct item is selected and committed to the ITextBuffer.  If this is a forward completion
-                // then we select the first item, else the last.  Sending the command will go ahead and insert the 
-                // completion in the given span
-                var command = isForward ? IntellisenseKeyboardCommand.TopLine : IntellisenseKeyboardCommand.BottomLine;
-                wordCompletionSession.SendCommand(command);
+                if (command.HasValue)
+                    wordCompletionSession.SendCommand(command.Value);
 
                 RaiseCompleted(wordCompletionSession);
 

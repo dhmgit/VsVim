@@ -20,6 +20,7 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
         private readonly IIntellisenseSessionStack _intellisenseSessionStack;
         private readonly ITrackingSpan _wordTrackingSpan;
         private bool _isDismissed;
+        private string _currentInsertionText;
         private event EventHandler _dismissed;
 
         internal WordCompletionSession(ITrackingSpan wordTrackingSpan, IIntellisenseSessionStack intellisenseSessionStack, ICompletionSession completionSession, WordCompletionSet wordCompletionSet)
@@ -67,15 +68,18 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
                 return false;
             }
 
-            // Command succeeded so there is a new selection.  Put the new selection into the
-            // ITextView to replace the current selection
-            var wordSpan = TrackingSpanUtil.GetSpan(_textView.TextSnapshot, _wordTrackingSpan);
-            if (wordSpan.IsSome() &&
-                _wordCompletionSet.SelectionStatus != null &&
-                _wordCompletionSet.SelectionStatus.Completion != null)
+            _currentInsertionText = _wordCompletionSet.SelectionStatus?.Completion?.InsertionText;
+            if (_wordCompletionSet.SelectionUpdatesBuffer)
             {
-                _textView.TextBuffer.Replace(wordSpan.Value, _wordCompletionSet.SelectionStatus.Completion.InsertionText);
+                // Command succeeded so there is a new selection.  Put the new selection into the
+                // ITextView to replace the current selection
+                var wordSpan = TrackingSpanUtil.GetSpan(_textView.TextSnapshot, _wordTrackingSpan);
+                if (wordSpan.IsSome() && _currentInsertionText != null)
+                {
+                    _textView.TextBuffer.Replace(wordSpan.Value, _currentInsertionText);
+                }
             }
+            
 
             return true;
         }
@@ -103,6 +107,8 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
         {
             get { return _completionSession.TextView; }
         }
+
+        string IWordCompletionSession.CurrentInsertionText => _currentInsertionText;
 
         bool IWordCompletionSession.IsDismissed
         {

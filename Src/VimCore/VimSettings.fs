@@ -171,6 +171,7 @@ type internal GlobalSettings() =
             (MouseModelName, "mousem", SettingValue.String "popup", SettingOptions.None)
             (PathName,"pa", SettingValue.String ".,,", SettingOptions.FileName)
             (ParagraphsName, "para", SettingValue.String "IPLPPPQPP TPHPLIPpLpItpplpipbp", SettingOptions.None)
+            (RegisterCompletionName, RegisterCompletionName, SettingValue.Toggle false, SettingOptions.None)
             (SectionsName, "sect", SettingValue.String "SHNHH HUnhsh", SettingOptions.None)
             (SelectionName, "sel", SettingValue.String "inclusive", SettingOptions.None)
             (SelectModeName, "slm", SettingValue.String "", SettingOptions.None)
@@ -400,6 +401,9 @@ type internal GlobalSettings() =
             with get() = _map.GetStringValue PathName
             and set value = _map.TrySetValue PathName (SettingValue.String value) |> ignore
         member x.PathList = x.GetPathOptionList (_map.GetStringValue PathName)
+        member x.RegisterCompletion
+            with get() = _map.GetBoolValue RegisterCompletionName
+            and set value = _map.TrySetValue RegisterCompletionName (SettingValue.Toggle value) |> ignore
         member x.ScrollOffset
             with get() = _map.GetNumberValue ScrollOffsetName
             and set value = _map.TrySetValue ScrollOffsetName (SettingValue.Number value) |> ignore

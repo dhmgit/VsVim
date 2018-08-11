@@ -15,10 +15,13 @@ namespace Vim.UI.Wpf.Implementation.WordCompletion
         {
         }
 
-        internal WordCompletionSet(ITrackingSpan wordTrackingSpan, IEnumerable<Completion> completions)
+        internal WordCompletionSet(ITrackingSpan wordTrackingSpan, IEnumerable<Completion> completions, bool selectionUpdatesBuffer)
             : base(Name, Name, wordTrackingSpan, completions, null)
         {
+            SelectionUpdatesBuffer = selectionUpdatesBuffer;
         }
+
+        public bool SelectionUpdatesBuffer { get; }
 
         /// <summary>
         /// For a word completion set there is no best match.  This is called very often by the the various

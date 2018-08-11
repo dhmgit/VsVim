@@ -32,6 +32,7 @@ module GlobalSettingNames =
     let MouseModelName = "mousemodel"
     let ParagraphsName = "paragraphs"
     let PathName = "path"
+    let RegisterCompletionName = "vsvim_registercompletion"
     let ScrollOffsetName = "scrolloff"
     let SectionsName = "sections"
     let SelectionName = "selection"
@@ -456,6 +457,8 @@ and IVimGlobalSettings =
 
     /// Strongly typed list of path entries
     abstract PathList: PathOption list 
+    
+    abstract RegisterCompletion: bool with get, set
 
     /// The nrooff macros that separate sections
     abstract Sections: string with get, set
@@ -567,7 +570,7 @@ and IVimLocalSettings =
 
     /// Which characters escape quotes for certain motion types
     abstract QuoteEscape: string with get, set
-
+    
     /// Whether or not the buffer ends with a newline
     abstract EndOfLine: bool with get, set
 

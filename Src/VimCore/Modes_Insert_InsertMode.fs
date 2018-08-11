@@ -168,7 +168,7 @@ type ActiveEditItem =
     | WordCompletion of IWordCompletionSession 
 
     /// In the middle of a paste operation.  Waiting for the register to paste from
-    | Paste 
+    | Paste of IWordCompletionSession option
 
     /// In the middle of one of the special paste operations.  The provided flags should 
     /// be passed along to the final Paste operation
@@ -392,7 +392,7 @@ type internal InsertMode
 
     member x.IsInPaste =
         match _sessionData.ActiveEditItem with
-        | ActiveEditItem.Paste -> true
+        | ActiveEditItem.Paste _ -> true
         | ActiveEditItem.PasteSpecial _ -> true
         | _ -> false
 
@@ -415,13 +415,18 @@ type internal InsertMode
     /// Cancel the active IWordCompletionSession if there is such a session 
     /// active
     member x.CancelWordCompletionSession keyInput = 
-        match _sessionData.ActiveEditItem with
-        | ActiveEditItem.WordCompletion wordCompletionSession -> 
-            if not wordCompletionSession.IsDismissed then
-                wordCompletionSession.Dismiss()
+        x.EndWordCompletionSession keyInput |> ignore
 
-            _sessionData <- { _sessionData with ActiveEditItem = ActiveEditItem.None }
-        | _ -> ()
+    member x.EndWordCompletionSession keyInput = 
+        let wordCompletionSession =
+            match _sessionData.ActiveEditItem with
+            | ActiveEditItem.WordCompletion wcs -> wcs |> Some
+            | ActiveEditItem.Paste wcs -> wcs
+            | _ -> None
+        if wordCompletionSession.IsSome && not wordCompletionSession.Value.IsDismissed then
+            wordCompletionSession.Value.Dismiss()
+        _sessionData <- { _sessionData with ActiveEditItem = ActiveEditItem.None }
+        wordCompletionSession
 
     /// Can Insert mode handle this particular KeyInput value 
     member x.CanProcess keyInput = x.GetRawInsertCommand keyInput |> Option.isSome
@@ -896,7 +901,54 @@ type internal InsertMode
     /// Start a paste session in insert mode
     member x.ProcessPasteStart keyInput =
         x.CancelWordCompletionSession()
-        _sessionData <- { _sessionData with ActiveEditItem = if _isReplace then ActiveEditItem.OverwriteReplace else ActiveEditItem.Paste }
+        let wordSpan = 
+            match x.GetWordCompletionSpan() with
+            | Some span -> span
+            | None -> SnapshotSpan(x.CaretPoint, 0)
+        let normalizeDisplayString (registerValue: RegisterValue) =
+            if registerValue.IsString then
+                StringUtil.GetDisplayString registerValue.StringValue
+            else
+                registerValue.KeyInputs
+                |> KeyInputSetUtil.OfList
+                |> KeyNotationUtil.KeyInputSetToString
+
+        let displayNames = 
+            // The documentation for this command says that it should display only the
+            // named and numbered registers.  Experimentation shows that it should also
+            // display last search, the quote star and a few others
+            RegisterName.All
+            |> Seq.filter (fun name ->
+                match name with
+                | RegisterName.Numbered _ -> true
+                | RegisterName.Named named -> not named.IsAppend
+                | RegisterName.SelectionAndDrop drop -> drop <> SelectionAndDropRegister.Star
+                | RegisterName.LastSearchPattern -> true
+                | RegisterName.ReadOnly ReadOnlyRegister.Colon -> true
+                | _ -> false)
+
+        // Build up the status string messages
+        let lines = 
+            displayNames 
+            |> Seq.map (fun name -> 
+                let register = _vimBuffer.RegisterMap.GetRegister name
+                match register.Name.Char, StringUtil.IsNullOrEmpty register.StringValue with
+                | None, _ -> None
+                | Some c, true -> None
+                | Some c, false -> Some (c, normalizeDisplayString register.RegisterValue))
+            |> SeqUtil.filterToSome
+        
+        let activeEditItem = 
+            if _isReplace then ActiveEditItem.OverwriteReplace 
+            else 
+                let wordCompletionSession = 
+                    if _globalSettings.RegisterCompletion then
+                        _wordCompletionSessionFactoryService.CreateRegisterCompletionSession _textView wordSpan lines |> Some
+                    else
+                        None
+                ActiveEditItem.Paste wordCompletionSession
+
+        _sessionData <- { _sessionData with ActiveEditItem = activeEditItem }
         ProcessResult.Handled ModeSwitch.NoSwitch
 
     /// Start a undo session in insert mode
@@ -911,30 +963,79 @@ type internal InsertMode
         ProcessResult.Handled ModeSwitch.NoSwitch
 
     /// Process the second key of a paste operation.  
-    member x.ProcessPaste keyInput = 
-
+    member x.ProcessPaste (keyInput: KeyInput) (wordCompletionSession: IWordCompletionSession option) = 
         let pasteSpecial flags = 
+            x.CancelWordCompletionSession() 
             _sessionData <- { _sessionData with ActiveEditItem = ActiveEditItem.PasteSpecial flags }
             ProcessResult.Handled ModeSwitch.NoSwitch
+        
+        let processPasteKey keyInput = 
+            // Get the text to be inserted.
+            if keyInput = KeyInputUtil.CharWithControlToKeyInput 'r' then
+                let flags = PasteFlags.Formatting ||| PasteFlags.Indent
+                pasteSpecial flags
+            elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'o' then
+                let flags = PasteFlags.None
+                pasteSpecial flags
+            elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'p' then
+                let flags = PasteFlags.Indent
+                pasteSpecial flags
+            else
+                let flags = PasteFlags.Formatting ||| PasteFlags.Indent ||| PasteFlags.TextAsTyped
+                x.Paste keyInput flags
 
-        // Get the text to be inserted.
-        if keyInput = KeyInputUtil.CharWithControlToKeyInput 'r' then
-            let flags = PasteFlags.Formatting ||| PasteFlags.Indent
-            pasteSpecial flags
-        elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'o' then
-            let flags = PasteFlags.None
-            pasteSpecial flags
-        elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'p' then
-            let flags = PasteFlags.Indent
-            pasteSpecial flags
-        else
-            let flags = PasteFlags.Formatting ||| PasteFlags.Indent ||| PasteFlags.TextAsTyped
-            x.Paste keyInput flags
+        let processPasteCompletion (keyInput: KeyInput) (wordCompletionSession: IWordCompletionSession) = 
+            let handled =
+                if keyInput = KeyNotationUtil.StringToKeyInput("<C-n>") || keyInput = KeyNotationUtil.StringToKeyInput("<Down>") then
+                    wordCompletionSession.MoveNext() |> Some
+                elif keyInput = KeyNotationUtil.StringToKeyInput("<C-p>") || keyInput = KeyNotationUtil.StringToKeyInput("<Up>") then
+                    wordCompletionSession.MovePrevious() |> Some
+                else
+                    None
+            match handled with
+            | Some handled ->
+                if handled then 
+                    ProcessResult.Handled ModeSwitch.NoSwitch 
+                else 
+                    ProcessResult.Error
+            | None ->
+                if keyInput = KeyInputUtil.EscapeKey || keyInput = KeyInputUtil.CharWithControlToKeyInput('e') then
+                    x.CancelWordCompletionSession() 
+                    ProcessResult.Handled ModeSwitch.NoSwitch 
+                elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'r' then
+                    let flags = PasteFlags.Formatting ||| PasteFlags.Indent
+                    pasteSpecial flags
+                elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'o' then
+                    let flags = PasteFlags.None
+                    pasteSpecial flags
+                elif keyInput = KeyInputUtil.CharWithControlToKeyInput 'p' then
+                    let flags = PasteFlags.Indent
+                    pasteSpecial flags
+                else
+                    let completionResult = x.EndWordCompletionSession()
+                    let flags = PasteFlags.Formatting ||| PasteFlags.Indent ||| PasteFlags.TextAsTyped
+                    let pasteInput = 
+                        if keyInput = KeyInputUtil.EnterKey || keyInput = KeyInputUtil.CharWithControlToKeyInput('y') then
+                            match completionResult with
+                            | Some completionResult ->
+                                KeyInputUtil.CharToKeyInput (StringUtil.CharAt 0 completionResult.CurrentInsertionText) |> Some
+                            | None ->
+                                None
+                        else
+                            keyInput |> Some
+                    if pasteInput.IsSome then
+                        x.Paste pasteInput.Value flags
+                    else
+                        ProcessResult.Handled ModeSwitch.NoSwitch
+        
+        match wordCompletionSession with
+            | Some wcs -> processPasteCompletion keyInput wcs
+            | None -> processPasteKey keyInput  
 
     /// Process the second key of an undo operation.  
     member x.ProcessUndo keyInput = 
 
-        // Handle the next key.
+            // Handle the next key.
         if keyInput = KeyInputUtil.CharToKeyInput 'u' then
             x.BreakUndoSequence "Break undo sequence"
 
@@ -954,8 +1055,8 @@ type internal InsertMode
         match _sessionData.ActiveEditItem with
         | ActiveEditItem.WordCompletion wordCompletionSession ->
             x.ProcessWithWordCompletionSession wordCompletionSession keyInput
-        | ActiveEditItem.Paste ->
-            x.ProcessPaste keyInput
+        | ActiveEditItem.Paste wordCompletionSession ->
+            x.ProcessPaste keyInput wordCompletionSession
         | ActiveEditItem.PasteSpecial pasteFlags ->
             x.Paste keyInput pasteFlags
         | ActiveEditItem.OverwriteReplace ->

@@ -162,6 +162,8 @@ type IWordCompletionSession =
 
     /// Dismiss the completion session 
     abstract Dismiss: unit -> unit
+    
+    abstract CurrentInsertionText: string
 
     /// Raised when the session is dismissed
     [<CLIEvent>]
@@ -177,6 +179,7 @@ type IWordCompletionSessionFactoryService =
 
     /// Create a session with the given set of words
     abstract CreateWordCompletionSession: textView: ITextView -> wordSpan: SnapshotSpan -> words: string seq -> isForward: bool -> IWordCompletionSession
+    abstract CreateRegisterCompletionSession: textView: ITextView -> wordSpan: SnapshotSpan -> pairs: (char * string) seq -> IWordCompletionSession
 
     /// Raised when the session is created
     [<CLIEvent>]
